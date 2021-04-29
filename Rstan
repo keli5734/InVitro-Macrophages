@@ -1,0 +1,110 @@
+functions{
+  real[]  Macrophage_func(real t, real[] y, real[] theta, real[] x_r, int[] x_i){
+    
+    real dydt[3];
+    
+    dydt[1] = -theta[1] * y[1] * y[3]; // 
+    dydt[2] =  theta[1] * y[1] * y[3]; //
+    dydt[3] =  theta[2] * y[2] - theta[3] * y[3]; // 
+    
+    return dydt;
+  }
+}
+
+data{
+  int<lower=0> N; // data point
+  real time_data[N]; // Time-series
+  real log_V_data[N]; // 1918 viral load data
+  real M0; // initial number of macrophages
+  real I0; // initial number of infected macrophages
+  real t0; // initial time point 
+}
+
+transformed data{
+  real x_r[0];
+  int x_i[0];
+}
+
+parameters{
+  
+  real log10_theta[3]; // use normal distribution for beta,p and V0
+  real<lower=0> theta; // use lognormal priros for delta_M and delta_V
+  real<lower=0> sigma; // variance for true viral load data
+  
+  
+  
+}
+
+transformed parameters{
+  
+  real y[N,3];
+  vector[N] V_pred;
+  real y0[3];
+  real theta_EST[4];
+  
+  
+  theta_EST[1] = 10^log10_theta[1]; // beta
+  theta_EST[2] = 10^log10_theta[2]; // p
+  theta_EST[3] = theta; // delta_V
+  theta_EST[4] = 10^log10_theta[3]; // V0
+
+  
+  y0[1] = M0;
+  y0[2] = I0;
+  y0[3] = theta_EST[4];
+
+  
+   y = integrate_ode_bdf(Macrophage_func, y0, t0, time_data, theta_EST, x_r, x_i);
+  for(i in 1:N){
+    V_pred[i] = y[i,3];
+  }
+  
+  }
+
+
+
+model{
+
+log10_theta[1] ~ normal(-6,2); // beta
+log10_theta[2] ~ normal(0,2); // p
+//log10_theta[3] ~ normal(-8,2); // kappaM
+log10_theta[3] ~ normal(0,2); // V0
+
+
+//theta[1] ~ lognormal(log(0.04), 1); //delta_M
+theta ~ lognormal(log(28.4), 1); // delta_V
+
+sigma ~ normal(0,1); // sigma
+
+
+
+
+//log_viral_load_data_WT ~ normal(log(V_pred_WT), sigma[1]); // --> measured 
+//log_viral_load_data_KO ~ normal(log(V_pred_KO), sigma[1]); 
+
+//Macrophage_data_WT ~ normal(log(Macrophage_pred_WT), sigma[2]);
+//Macrophage_data_KO ~ normal(log(Macrophage_pred_KO), sigma[2]);
+
+
+for (i in 1:N){
+  
+  //if (log_V_data[i] >= 1){
+    target += normal_lpdf(log_V_data[i] | log(V_pred[i]), sigma);
+ // }
+   
+//   else if (log_V_data[i] == 0 ){
+     
+//     target += log(integrate_1d(normal_density,
+//                            0,
+//                             1,
+//                             {V_pred[i],sigma[1]}));
+//  }
+  
+//  else {
+//    target += 0;
+//  }
+  
+}
+
+
+}
