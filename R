@@ -1,0 +1,206 @@
+#rm(list=ls())  # clear memory
+library(rstan)
+library(tidyverse)
+library(bayesplot)
+library(deSolve)
+library(readxl)
+
+Viral_load_1918 <- read_excel("Mice-InVitro.xls", sheet = "Thai16")
+
+time_data <- Viral_load_1918$X
+V_data_1918 <- Viral_load_1918$Y
+
+len_time <- length(time_data)
+
+
+data_combined <-  list(N = len_time,
+                       time_data = time_data,
+                       log_V_data = log(V_data_1918), 
+                       M0 = 1e+6,
+                       I0 = 0,
+                       t0 = 0)
+
+## =========== Viral parameters only ============== ##
+
+
+init_condition <- list(
+  log10_theta = c(log10(8e-6),
+                  log10(1),
+                  #log10(1e-2),
+                  #log10(1e-8),
+                  log10(10)),
+  theta = c(28.4),
+  sigma = c(1))
+
+
+init_condition2 <- list(
+  log10_theta = c(log10(5e-6),
+                  log10(1.5),
+                  #log10(4e-2),
+                  #log10(5e-10),
+                  log10(100)),
+  theta = c(20),
+  sigma = c(1))
+
+options(mc.cores=parallel::detectCores()) # to utilise all cores available in your computer
+
+fit_Model_TX91_3<- stan("InVitroMacrophages.stan",
+                        data = data_combined,
+                        seed = 20210401,  # set random seed for reproducibility
+                        iter = 2000,
+                        chains = 1,
+                        init = list(init_condition),
+                        warmup = 1000,
+                        control = list(adapt_delta = 0.99, max_treedepth = 15))
+
+
+
+print(fit_Model_TX91 , pars = c("theta_EST"))
+stan_dens(fit_Model_TX91 , pars = c("theta_EST"), separate_chains = TRUE,nrow = 6)
+
+
+
+posterior_samples = rstan::extract(fit_Model_TX91 , pars = c("theta_EST"), inc_warmup = TRUE, permuted = FALSE)
+posterior_samples_merged_after_burnin = rstan::extract(fit_Model_TX91 , pars = c("theta_EST"))
+
+color_scheme_set("brewer-Spectral")
+mcmc_trace(posterior_samples, n_warmup = 1000,
+           facet_args = list(nrow = 4, labeller = label_parsed))
+
+# show all marginal posterior distributions
+posterior_sample_table = data.frame(beta = posterior_samples_merged_after_burnin$theta_EST[,1],
+                                    p = posterior_samples_merged_after_burnin$theta_EST[,2],
+                                    #delta_M = posterior_samples_merged_after_burnin$theta_EST[,3],
+                                    delta_V = posterior_samples_merged_after_burnin$theta_EST[,3],
+                                    V0 = posterior_samples_merged_after_burnin$theta_EST[,4])
+
+
+
+
+ggplot(posterior_sample_table, aes(x = log10(beta))) + 
+  geom_histogram(breaks=seq(-10,10,20/100),aes(y = ..density.., color = 'posterior')) + 
+  stat_function(fun = function(x) {dnorm(x, 0, 4)}, aes(color = 'prior')) +
+  #geom_vline(aes(xintercept=log10(quantile(beta, 0.025))),
+  #           linetype="dashed",color = 'red') + 
+  geom_vline(aes(xintercept=log10(quantile(beta, 0.5))),
+             linetype="solid",color = 'red') + 
+  #geom_vline(aes(xintercept=log10(quantile(beta, 0.975))),
+  #           linetype="dashed",color = 'red') + 
+  lims(x = c(-10, 10)) + 
+  theme_classic() + 
+  scale_colour_manual(name="Distribution",
+                      values=c(posterior="black", prior="purple")) # beta
+
+
+
+ggplot(posterior_sample_table, aes(x = log10(p))) + 
+  geom_histogram(breaks=seq(-10,10,20/100),aes(y = ..density.., color = 'posterior')) + 
+  stat_function(fun = function(x) {dnorm(x, 0, 4)}, aes(color = 'prior')) +
+  geom_vline(aes(xintercept=log10(quantile(p, 0.025))),
+             linetype="dashed",color = 'red') + 
+  geom_vline(aes(xintercept=log10(quantile(p, 0.5))),
+             linetype="solid",color = 'red') + 
+  geom_vline(aes(xintercept=log10(quantile(p, 0.975))),
+             linetype="dashed",color = 'red') + 
+  lims(x = c(-10, 10)) + 
+  theme_classic() + 
+  scale_colour_manual(name="Distribution",
+                      values=c(posterior="black", prior="purple")) # p
+
+ggplot(posterior_sample_table, aes(x = log10(V0))) + 
+  geom_histogram(breaks=seq(0,4, 4/100),aes(y = ..density.., color = 'posterior')) + 
+  stat_function(fun = function(x) {dnorm(x, 0, 2)}, aes(color = 'prior')) +
+  geom_vline(aes(xintercept=log10(quantile(V0, 0.025))),
+             linetype="dashed",color = 'red') + 
+  geom_vline(aes(xintercept=log10(quantile(V0, 0.5))),
+             linetype="solid",color = 'red') + 
+  geom_vline(aes(xintercept=log10(quantile(V0, 0.975))),
+             linetype="dashed",color = 'red') + 
+  lims(x = c(-4, 8)) + 
+  theme_classic() + 
+  scale_colour_manual(name="Distribution",
+                      values=c(posterior="black", prior="purple")) # V0
+
+
+
+
+
+#====================================== Prediction check ====================================#
+Within_host_model_InVitro_Macrophages = function(t, y, theta){
+  
+  dydt1 = -theta[1] * y[1] * y[3]
+  dydt2 =  theta[1] * y[1] * y[3] 
+  dydt3 =  theta[2] * y[2] - theta[3] * y[3]
+  
+  list(c(dydt1, dydt2, dydt3))
+  
+}
+
+n_iteration <- 1000
+
+t_ppc = seq(0,10, .1)
+V_ppc_WT = matrix(, nrow = n_iteration, ncol = length(t_ppc))
+
+
+lower_95PI_WT = t_ppc
+median_95PI_WT = t_ppc
+upper_95PI_WT = t_ppc
+
+R0 <- vector()
+
+
+for (i in 1:n_iteration){
+  y_init = c(data_combined$M0, data_combined$I0,posterior_sample_table$V0[i])
+  param_fit = c(posterior_sample_table$beta[i],
+                posterior_sample_table$p[i], 
+                #posterior_sample_table$delta_M[i],
+                posterior_sample_table$delta_V[i])
+  R0[i] = param_fit[1] * param_fit[2] * data_combined$M0 / (param_fit[3])
+  
+  model_output_WT = ode(times = t_ppc, y = y_init, func = Within_host_model_InVitro_Macrophages, parms = param_fit, method = "bdf")
+  V_ppc_WT[i,] = model_output_WT[,4]
+}
+
+
+
+
+
+
+for (i in 1:length(t_ppc)){
+  temp_WT = unname(quantile(V_ppc_WT[,i], probs = c(0.025, 0.5, 0.975)))
+  
+  lower_95PI_WT[i] = temp_WT[1]
+  median_95PI_WT[i] = temp_WT[2]
+  upper_95PI_WT[i] = temp_WT[3]
+  
+  
+}
+
+data_plot = data.frame(time = time_data,
+                       V_WT = log10(exp(data_combined$log_V_data)))
+
+fit_plot = data.frame(time = t_ppc,
+                      lower_95PI_WT = lower_95PI_WT,
+                      V_WT = median_95PI_WT,
+                      upper_95PI_WT = upper_95PI_WT)
+
+library(wesanderson)
+ggplot(fit_plot, aes(time))+
+  geom_point(data = data_plot, aes(time, V_WT), size = 3) +
+  geom_line(data = fit_plot, aes(time, log10(V_WT))) +
+  geom_ribbon(aes(ymin = log10(lower_95PI_WT), ymax = log10(upper_95PI_WT)), alpha = 0.5, na.rm = TRUE) +
+  #theme_bw() +
+  theme(text = element_text(size = 25))  + 
+  ylab("Viral load (fold change)") + xlab("Days post infection (p.i.)") + 
+  #theme(legend.key = element_rect(fill = "white", colour = "white"), legend.position = "top") + 
+  scale_color_manual(values = wes_palette("GrandBudapest1", n = 1)) + 
+  scale_fill_manual(values = wes_palette("GrandBudapest1", n = 1))  # V_WT
+
+
+pairs(posterior_sample_table)
+
+
+
+# =============== Save the fitting results and generate outputs in CSV file  ===================#
+write.csv(posterior_samples_merged_after_burnin, file="InVitroMacrophage_TX91.csv")
+saveRDS(fit_Model_SP83, "Fitting_TX91.rds")
